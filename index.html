@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Four in a Row - Extremely Hard</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 20px 8px;
+  background: #101322;
+  color: white;
+  font-family: Arial, sans-serif;
+  text-align: center;
+}
+
+h1 {
+  color: #65e6ff;
+  font-size: 32px;
+}
+
+#level {
+  color: #ff6969;
+  font-weight: bold;
+}
+
+#status {
+  min-height: 28px;
+  font-size: 18px;
+  margin: 15px 0;
+}
+
+#score { margin: 15px 0; }
+
+#game {
+  width: min(100%, 490px);
+  margin: 15px auto;
+}
+
+#controls, #board {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+}
+
+#controls { margin-bottom: 6px; }
+
+.drop {
+  background: #252b45;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 0;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.drop:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#board {
+  background: #2458c5;
+  border: 5px solid #2458c5;
+  border-radius: 12px;
+  padding: 4px;
+}
+
+.slot {
+  aspect-ratio: 1;
+  min-width: 0;
+  border-radius: 50%;
+  background: #101322;
+}
+
+.red {
+  background: #ff4b55;
+  box-shadow: inset 0 0 0 3px #d62f3b;
+}
+
+.yellow {
+  background: #ffd447;
+  box-shadow: inset 0 0 0 3px #d9a900;
+}
+
+.action {
+  background: #65e6ff;
+  color: #101322;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 22px;
+  margin: 8px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+</style>
+</head>
+
+<body>
+
+<h1>FOUR IN A ROW</h1>
+<p>Connect four discs to win!</p>
+<p id="level">Robot Level: EXTREMELY HARD</p>
+
+<div id="score">
+  You: <span id="playerScore">0</span> |
+  Robot: <span id="robotScore">0</span> |
+  Draws: <span id="drawScore">0</span>
+</div>
+
+<div id="status">Your turn! You are RED.</div>
+
+<div id="game">
+  <div id="controls"></div>
+  <div id="board"></div>
+</div>
+
+<button class="action" id="restart">Play Again</button>
+
+<script>
+"use strict";
+
+const ROWS = 6;
+const COLS = 7;
+const SEARCH_DEPTH = 5;
+
+const boardElement = document.getElementById("board");
+const controlsElement = document.getElementById("controls");
+const statusText = document.getElementById("status");
+
+const directions = [
+  [0, 1], [1, 0], [1, 1], [1, -1]
+];
+
+let board;
+let gameOver = false;
+let thinking = false;
+let roundId = 0;
+
+let playerScore = 0;
+let robotScore = 0;
+let drawScore = 0;
+
+function createBoard() {
+  return Array.from(
+    { length: ROWS },
+    () => Array(COLS).fill(0)
+  );
+}
+
+function buildGame() {
+  for (let c = 0; c < COLS; c++) {
+    const button = document.createElement("button");
+    button.className = "drop";
+    button.textContent = "↓";
+    button.setAttribute(
+      "aria-label",
+      "Drop disc in column " + (c + 1)
+    );
+    button.addEventListener("click", () => playerMove(c));
+    controlsElement.appendChild(button);
+  }
+
+  for (let i = 0; i < ROWS * COLS; i++) {
+    const slot = document.createElement("div");
+    slot.className = "slot";
+    boardElement.appendChild(slot);
+  }
+}
+
+function render() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const slot = boardElement.children[r * COLS + c];
+      slot.className = "slot";
+
+      if (board[r][c] === 1) slot.classList.add("red");
+      if (board[r][c] === 2) slot.classList.add("yellow");
+    }
+  }
+
+  [...controlsElement.children].forEach((button, c) => {
+    button.disabled =
+      gameOver || thinking || board[0][c] !== 0;
+  });
+}
+
+function dropDisc(b, col, player) {
+  for (let r = ROWS - 1; r >= 0; r--) {
+    if (b[r][col] === 0) {
+      b[r][col] = player;
+      return r;
+    }
+  }
+
+  return -1;
+}
+
+function hasWon(b, player) {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (b[r][c] !== player) continue;
+
+      for (const [dr, dc] of directions) {
+        let count = 1;
+
+        for (let k = 1; k < 4; k++) {
+          const nr = r + dr * k;
+          const nc = c + dc * k;
+
+          if (
+            nr < 0 || nr >= ROWS ||
+            nc < 0 || nc >= COLS ||
+            b[nr][nc] !== player
+          ) break;
+
+          count++;
+        }
+
+        if (count === 4) return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function isDraw(b) {
+  return b[0].every(value => value !== 0);
+}
+
+function availableColumns(b) {
+  return Array.from({ length: COLS }, (_, c) => c)
+    .filter(c => b[0][c] === 0);
+}
+
+function scoreWindow(window) {
+  const robot = window.filter(v => v === 2).length;
+  const player = window.filter(v => v === 1).length;
+  const empty = window.filter(v => v === 0).length;
+
+  if (robot === 4) return 100000;
+  if (player === 4) return -100000;
+
+  if (robot === 3 && empty === 1) return 150;
+  if (robot === 2 && empty === 2) return 20;
+
+  if (player === 3 && empty === 1) return -180;
+  if (player === 2 && empty === 2) return -25;
+
+  return 0;
+}
+
+function evaluateBoard(b) {
+  let score = 0;
+
+  // Control of the center column.
+  for (let r = 0; r < ROWS; r++) {
+    if (b[r][3] === 2) score += 7;
+    if (b[r][3] === 1) score -= 7;
+  }
+
+  // Horizontal windows.
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS - 3; c++) {
+      score += scoreWindow([
+        b[r][c], b[r][c + 1],
+        b[r][c + 2], b[r][c + 3]
+      ]);
+    }
+  }
+
+  // Vertical windows.
+  for (let r = 0; r < ROWS - 3; r++) {
+    for (let c = 0; c < COLS; c++) {
+      score += scoreWindow([
+        b[r][c], b[r + 1][c],
+        b[r + 2][c], b[r + 3][c]
+      ]);
+    }
+  }
+
+  // Diagonal windows.
+  for (let r = 0; r < ROWS - 3; r++) {
+    for (let c = 0; c < COLS - 3; c++) {
+      score += scoreWindow([
+        b[r][c], b[r + 1][c + 1],
+        b[r + 2][c + 2], b[r + 3][c + 3]
+      ]);
+
+      score += scoreWindow([
+        b[r + 3][c], b[r + 2][c + 1],
+        b[r + 1][c + 2], b[r][c + 3]
+      ]);
+    }
+  }
+
+  return score;
+}
+
+function minimax(b, depth, alpha, beta, maximizing) {
+  if (hasWon(b, 2)) return 1000000 + depth;
+  if (hasWon(b, 1)) return -1000000 - depth;
+  if (isDraw(b)) return 0;
+  if (depth === 0) return evaluateBoard(b);
+
+  const valid = availableColumns(b).sort(
+    (a, c) => Math.abs(a - 3) - Math.abs(c - 3)
+  );
+
+  if (maximizing) {
+    let best = -Infinity;
+
+    for (const col of valid) {
+      const copy = b.map(row => [...row]);
+      dropDisc(copy, col, 2);
+
+      const value = minimax(
+        copy, depth - 1, alpha, beta, false
+      );
+
+      best = Math.max(best, value);
+      alpha = Math.max(alpha, best);
+
+      if (beta <= alpha) break;
+    }
+
+    return best;
+  } else {
+    let best = Infinity;
+
+    for (const col of valid) {
+      const copy = b.map(row => [...row]);
+      dropDisc(copy, col, 1);
+
+      const value = minimax(
+        copy, depth - 1, alpha, beta, true
+      );
+
+      best = Math.min(best, value);
+      beta = Math.min(beta, best);
+
+      if (beta <= alpha) break;
+    }
+
+    return best;
+  }
+}
+
+function chooseHardMove() {
+  const valid = availableColumns(board).sort(
+    (a, c) => Math.abs(a - 3) - Math.abs(c - 3)
+  );
+
+  let bestMove = valid[0];
+  let bestScore = -Infinity;
+
+  for (const col of valid) {
+    const copy = board.map(row => [...row]);
+    dropDisc(copy, col, 2);
+
+    if (hasWon(copy, 2)) return col;
+
+    const score = minimax(
+      copy, SEARCH_DEPTH - 1, -Infinity, Infinity, false
+    );
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMove = col;
+    }
+  }
+
+  return bestMove;
+}
+
+function playerMove(col) {
+  if (gameOver || thinking || board[0][col] !== 0) return;
+
+  dropDisc(board, col, 1);
+  render();
+
+  if (hasWon(board, 1)) {
+    finishGame(1);
+    return;
+  }
+
+  if (isDraw(board)) {
+    finishGame(0);
+    return;
+  }
+
+  thinking = true;
+  statusText.textContent = "Robot is thinking...";
+  render();
+
+  const currentRound = roundId;
+
+  setTimeout(() => {
+    if (currentRound === roundId) robotMove();
+  }, 100);
+}
+
+function robotMove() {
+  if (gameOver) return;
+
+  const choices = availableColumns(board);
+
+  if (choices.length === 0) {
+    finishGame(0);
+    return;
+  }
+
+  const move = chooseHardMove();
+  dropDisc(board, move, 2);
+  render();
+
+  if (hasWon(board, 2)) {
+    finishGame(2);
+  } else if (isDraw(board)) {
+    finishGame(0);
+  } else {
+    thinking = false;
+    statusText.textContent = "Your turn! You are RED.";
+    render();
+  }
+}
+
+function updateScore() {
+  document.getElementById("playerScore").textContent = playerScore;
+  document.getElementById("robotScore").textContent = robotScore;
+  document.getElementById("drawScore").textContent = drawScore;
+}
+
+function finishGame(result) {
+  if (gameOver) return;
+
+  gameOver = true;
+  thinking = false;
+
+  if (result === 1) {
+    playerScore++;
+    statusText.textContent = "You win!";
+  } else if (result === 2) {
+    robotScore++;
+    statusText.textContent = "The robot wins!";
+  } else {
+    drawScore++;
+    statusText.textContent = "It's a draw!";
+  }
+
+  updateScore();
+  render();
+
+  const finishedRound = roundId;
+
+  setTimeout(() => {
+    if (finishedRound !== roundId) return;
+
+    board = createBoard();
+    gameOver = false;
+    thinking = false;
+    statusText.textContent =
+      "New round! Your turn — RED goes first.";
+    render();
+  }, 1800);
+}
+
+function restartGame() {
+  roundId++;
+  board = createBoard();
+  gameOver = false;
+  thinking = false;
+  statusText.textContent = "Your turn! You are RED.";
+  render();
+}
+
+document.getElementById("restart")
+  .addEventListener("click", restartGame);
+
+board = createBoard();
+buildGame();
+render();
+</script>
+
+</body>
+</html>
